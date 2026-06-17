@@ -8,6 +8,7 @@ import numpy.typing as npt
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
+import regex as re
 
 
 def run_linear(
@@ -561,6 +562,25 @@ def get_tokenizer(
     """
     raise NotImplementedError
 
+def init_vocab(special_tokens: list[str]):
+    vocab = { i : bytes([i]) for i in range(256) }
+    token_id = 256
+    for t in special_tokens:
+        vocab[token_id] = t.encode('utf-8')
+        token_id += 1
+    return vocab
+
+
+def init_freq_table(freq_table, segments):
+    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+    for seg in segments:
+        for t in re.finditer(PAT, seg):
+            key = tuple([bytes([i]) for i in t.group().encode('utf-8')])
+            if key in freq_table:
+                freq_table[key] += 1
+            else:
+                freq_table[key] = 1
+
 
 def run_train_bpe(
     input_path: str | os.PathLike,
@@ -589,4 +609,152 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    with open(input_path, 'r') as f:
+        corpus = f.read()
+
+    vocab = init_vocab(special_tokens)
+    token_id = len(vocab)
+
+    merges = [None] * (vocab_size - token_id)
+    merge_idx = 0
+    segments = re.split('|'.join([re.escape(s) for s in special_tokens]), corpus)
+
+    freq_table = {}
+    init_freq_table(freq_table, segments)
+
+    bp2words = {}
+    word2bp = {}
+    for word in freq_table.keys():
+        word2bp[word] = []
+        for key in zip(word[:-1], word[1:]):
+            if key in bp2words:
+                bp2words[key].add(word)
+            else:
+                bp2words[key] = set([word])
+            word2bp[word].append(key)
+
+    # byte pair frequency
+    bp_freq = {}
+
+    for word, freq in freq_table.items():
+        for i in range(len(word)-1):
+            key = (word[i], word[i+1])
+            bp_freq[key] = bp_freq.get(key, 0) + freq
+
+    while token_id < vocab_size:
+        # print(bp_freq)
+        # most freq pairs
+        max_freq = max(bp_freq.values())
+        #  take the lexicographically greater pair
+        greatest_pairs = [key for key, val in bp_freq.items() if val == max_freq]
+        greatest_pairs.sort()
+        greatest_pair = greatest_pairs[-1]
+
+        merge_word = greatest_pair[0] + greatest_pair[1]
+        replace_keys = []
+        
+        # merge key in freq_table
+        match_words = bp2words[greatest_pair]
+        for word in match_words:
+            if word not in freq_table:
+                continue
+
+            word_len = len(word)
+            if word_len == 1:
+                continue
+
+            start = 0
+            end = 0
+            i = 0
+
+            index_ranges = []
+            while i < word_len:
+                if i < word_len - 1 and greatest_pair == (word[i], word[i+1]):
+                    if end > 0:
+                        index_ranges.append( (start, end) )
+                    index_ranges.append( (-1, -1) ) # -1 means append merge_word
+                    i += 2
+                    start = end = i
+                else:
+                    i += 1
+                    end = i
+                    if i == word_len:
+                        index_ranges.append( (start, end) )
+
+            if (start == 0 and end == word_len):
+                continue
+            else:
+                new_word = []
+                for (idx_start, idx_end) in index_ranges:
+                    if idx_start == -1:
+                        new_word.append(merge_word)
+                    else:
+                        new_word.extend(word[idx_start:idx_end])
+                
+                new_word = tuple(new_word)
+                replace_keys.append( (word, new_word) )
+
+        for old_word, new_word in replace_keys:
+            freq = freq_table.pop(old_word)
+
+            freq_table[new_word] = freq_table.get(new_word, 0) + freq
+
+            for i in range(len(new_word) - 1):
+                bp = (new_word[i], new_word[i+1])
+                if bp in bp2words:
+                    bp2words[bp].add(new_word)
+                else:
+                    bp2words[bp] = set([new_word])
+
+            # 减少旧pair的贡献
+            for bp in word2bp[old_word]:
+                bp_freq[bp] -= freq
+                if bp_freq[bp] < 0:
+                    del bp_freq[bp]
+
+            # 增加新pair
+            word2bp[new_word] = list(zip(new_word[:-1], new_word[1:]))
+            for bp in word2bp[new_word]:
+                bp_freq[bp] = bp_freq.get(bp, 0) + freq
+                
+        bp2words.pop(greatest_pair)
+        bp_freq.pop(greatest_pair)
+
+        # add to vocab
+        vocab[token_id] = merge_word
+        token_id += 1
+
+        merges[merge_idx] = greatest_pair
+        merge_idx += 1
+
+    return vocab, merges
+
+
+if __name__ == "__main__":
+    
+    from common import FIXTURES_PATH
+    import time
+    # import cProfile
+    # import pstats
+
+    # Initialize the profiler
+    # profiler = cProfile.Profile()
+
+    # Run your target function inside the profiler context
+    input_path = FIXTURES_PATH / "corpus.en"
+    start_time = time.time()
+
+    # profiler.enable()
+    run_train_bpe(
+        input_path=input_path,
+        vocab_size=500,
+        special_tokens=["<|endoftext|>"],
+    )
+    # profiler.disable()
+
+    end_time = time.time()
+    print(f"Take {end_time - start_time} seconds")
+
+    # Format and print the results sorted by cumulative execution time
+    # stats = pstats.Stats(profiler).sort_stats('cumulative')
+    # stats.print_stats()
