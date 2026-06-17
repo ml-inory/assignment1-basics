@@ -711,6 +711,8 @@ def run_train_bpe(
                 bp_freq[bp] -= freq
                 if bp_freq[bp] < 0:
                     del bp_freq[bp]
+                    del bp2words[bp]
+            del word2bp[old_word]
 
             # 增加新pair
             word2bp[new_word] = list(zip(new_word[:-1], new_word[1:]))

@@ -51,3 +51,19 @@ def decode_utf8_bytes_to_str_wrong(bytestring: bytes):
 
 b'\xa2\x80'  
 two-byte sequence requires the leading bytes to be 110xxxxx.
+
+
+## Problem(train_bpe_tinystories)
+
+(a)
+Training on TinyStoriesV2-GPT4-valid.txt take 45 seconds, peak mem usage 94MB, longest token is 'accomplishment'
+
+(b) Profile
+Over 50% of time was used for init_freq_table(compute word counts)
+
+
+## Problem(train_bpe_expts_owt)
+
+(a) 
+Longest token: b'----------------------------------------------------------------'
+
