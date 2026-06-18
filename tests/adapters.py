@@ -560,7 +560,67 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
-    raise NotImplementedError
+    class Tokenizer:
+        def __init__(self, 
+                     vocab: dict[int, bytes], 
+                     merges: list[tuple[bytes, bytes]], 
+                     special_tokens: list[str] | None =None):
+            self.vocab = vocab
+            self.vocab_rev = {v:k for k,v in vocab.items()}
+            self.merges = merges
+            self.special_tokens = [] if special_tokens is None else special_tokens
+
+
+        def _pre_tokenize(self, text: str) -> list[str]:
+            PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+            pre_tokens = []
+            for t in re.finditer(PAT, text):
+                t = t.group().encode('utf-8')
+                pre_tokens += [bytes([i]) for i in t]
+            return pre_tokens
+        
+        
+        def encode(self, text: str) -> list[int]:
+            result = []
+            pre_tokens = self._pre_tokenize(text)
+            for t in pre_tokens:
+                if len(t) == 1:
+                    result += [ self.vocab_rev[t] ]
+                    continue
+
+                # [(c, a), (a, t)]
+                byte_pairs = list(zip(t[:-1], t[1:]))
+                # find byte pair that merge
+                while True:
+                    merge_bp = None
+                    merge_i = -1
+                    for i, bp in enumerate(byte_pairs):
+                        if bp in self.merges:
+                            merge_bp = bp[0] + bp[1]
+                            merge_i = i
+                            break
+
+                    if merge_i == -1:
+                        break
+                    else:
+                        if merge_i > 0:
+                            byte_pairs[merge_i-1] = (byte_pairs[merge_i-1][0], merge_bp)
+                        if merge_i < len(byte_pairs) - 1:
+                            byte_pairs[merge_i+1] = (merge_bp, byte_pairs[merge_i+1][1])
+                        
+                        if len(byte_pairs) > 1:
+                            del byte_pairs[merge_i]
+                # merged byte pairs -> list of bytes
+                merged_bytes = [byte_pairs[0][0],] + [bp[1] for bp in byte_pairs]
+                result += [self.vocab_rev[b] for b in merged_bytes]
+            return result
+        
+
+        def decode(self, ids: list[int]) -> str:
+            return ''.join([self.vocab[i].decode() for i in ids])
+        
+    return Tokenizer(vocab, merges, special_tokens)
+
 
 def init_vocab(special_tokens: list[str]):
     vocab = { i : bytes([i]) for i in range(256) }
